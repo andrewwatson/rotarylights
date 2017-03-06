@@ -4,12 +4,16 @@ import (
 	"fmt"
 	"github.com/stianeikeland/go-rpio"
 	"os"
+	"os/signal"
 	"time"
+	 "github.com/gizak/termui" 
 )
 
 var (
 	led1, led2, led3, led4, led5, led6, led7, led8 rpio.Pin
 	rot_sw, rot_dt, rot_clk                        rpio.Pin
+
+	pinSlots []rpio.Pin
 )
 
 const (
@@ -27,10 +31,6 @@ const (
 	PIN_ROT_CLK = 26
 )
 
-func init() {
-
-}
-
 func main() {
 
 	if err := rpio.Open(); err != nil {
@@ -39,94 +39,124 @@ func main() {
 	}
 
 	defer rpio.Close()
+
+   err := termui.Init()
+   if err != nil {
+      panic(err)
+   }
+
+   defer termui.Close()
+
+	killChannel := make(chan bool)
+
+	termui.Handle("/sys/kbd/q", func(termui.Event) {
+		termui.StopLoop()
+		renderLED(0)
+		killChannel <- true
+	})
+
 	setup()
-	rotary()
+	renderLED(0)
+
+	renderCUI(0, 0, 0, 0)
+
+   go rotary(killChannel)
+
+	termui.Loop()
 
 }
 
-func blink(pin rpio.Pin, times int) {
+func renderCUI(clk, dt, lastCLK rpio.State, value int) {
 
-	for i := 0; i < times; i++ {
-		pin.Low()
-		time.Sleep(20 * time.Millisecond)
-		pin.High()
-		time.Sleep(20 * time.Millisecond)
-		pin.Low()
-	}
-}
+	strs := []string{
+		time.Now().Format(time.RFC822),
+		fmt.Sprintf("DT PIN: %d", dt),
+		fmt.Sprintf("CLK PIN: %d", clk),
+		fmt.Sprintf("LAST CLK PIN: %d", lastCLK),
+		fmt.Sprintf("Value: %d", value),
+	}	
 
-func getEncoderDiff() int {
+	ls := termui.NewList()
+	ls.Items = strs
+	ls.ItemFgColor = termui.ColorYellow
+	ls.BorderLabel = "Current Values"
+	ls.Height = 10 
+	ls.Width = 50
+	ls.Y = 0
 
-//	oldA := rpio.High
-//	oldB := rpio.High
-
-//	result := 0
-
-	dt := rot_dt.Read()
-	clk := rot_dt.Read()
-
-	// newA := rot_dt.Read()
-	// newB := rot_clk.Read()
-
-	if dt == rpio.High {
-
-		if clk == rpio.High {
-			return 1
-		} else {
-			return -1
-		}
-	}
-
-	return 0
-/*
-	if (newA != oldA || newB != oldB) {
-
-		fmt.Println("change")
-		// something has changed
-		if oldA == rpio.High && newA == rpio.Low {
-			result = (int(oldB)*2 - 1)
-		}
-	}
-
-	oldA = newA
-	oldB = newB
-	return result
-*/
+	termui.Render(ls)
 
 }
 
-func rotary() {
+func rotary(killChannel chan bool) {
 
 	encoderVal := 0
 
-	for {
-		encoderVal = encoderVal + getEncoderDiff()
+	var lastCLK rpio.State
 
-		if (rot_sw.Read() == rpio.Low) {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+
+
+	lastCLK = rpio.High
+
+	for {
+
+		select {
+		case <- killChannel:
+			fmt.Println("shutdown signal")
+			renderLED(0)
+			return
+		default:
+		}
+
+		dt := rot_dt.Read()
+		clk := rot_dt.Read()
+
+		if dt == rpio.High {
+
+			if lastCLK == rpio.Low && clk == rpio.High {
+				encoderVal += 1
+			}
+
+			if lastCLK == rpio.High && clk == rpio.Low {
+				encoderVal -= 1
+			}
+
+		}
+
+		if lastCLK != clk {
+			lastCLK = clk
+		}
+
+		if rot_sw.Read() == rpio.Low {
 			// switch done been mashed down
 			// fmt.Println("push that button down")
 			encoderVal = 0
 		}
 
 		// blink(led8, 2)
-		fmt.Printf("Encoder Value: %d\n", encoderVal)
-		render(encoderVal)
-		time.Sleep(10 * time.Millisecond)
+		// fmt.Printf("Encoder Value: %d\n", encoderVal)
+		renderLED(encoderVal)
+		renderCUI(dt, clk, lastCLK, encoderVal)
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
-func render(current int) {
+func renderLED(current int) {
 
-	if (current > 7) {
-		current = 7
+	if current > 8 {
+		current = 8
 	}
 
+	// fmt.Printf("Current Value: %d", current)
+
 	for i := 0; i < 8; i++ {
-		
-		thePin := rpio.Pin(i)
+
+		thePin := pinSlots[i]
 		thePin.Low()
 
-		if (i < current) {
+		if i < current {
 			thePin.High()
 		}
 	}
@@ -143,6 +173,8 @@ func setup() {
 	led6 = rpio.Pin(PIN_LED_6)
 	led7 = rpio.Pin(PIN_LED_7)
 	led8 = rpio.Pin(PIN_LED_8)
+
+	pinSlots = []rpio.Pin{led1, led2, led3, led4, led5, led6, led7, led8}
 
 	rot_sw = rpio.Pin(PIN_ROT_SW)
 	rot_dt = rpio.Pin(PIN_ROT_DT)
@@ -166,36 +198,34 @@ func setup() {
 
 	delay := 50 * time.Millisecond
 
-	led1.High()
+	renderLED(0)
 	time.Sleep(delay)
-	led2.High()
+	renderLED(1)
 	time.Sleep(delay)
-	led3.High()
+	renderLED(2)
 	time.Sleep(delay)
-	led4.High()
+	renderLED(3)
 	time.Sleep(delay)
-	led5.High()
+	renderLED(4)
 	time.Sleep(delay)
-	led6.High()
+	renderLED(5)
 	time.Sleep(delay)
-	led7.High()
+	renderLED(6)
 	time.Sleep(delay)
-	led8.High()
+	renderLED(7)
 	time.Sleep(delay)
+	renderLED(8)
+	time.Sleep(250 * time.Millisecond)
+	renderLED(0)
+}
 
-	led1.Low()
-	time.Sleep(delay)
-	led2.Low()
-	time.Sleep(delay)
-	led3.Low()
-	time.Sleep(delay)
-	led4.Low()
-	time.Sleep(delay)
-	led5.Low()
-	time.Sleep(delay)
-	led6.Low()
-	time.Sleep(delay)
-	led7.Low()
-	time.Sleep(delay)
-	led8.Low()
+func blink(pin rpio.Pin, times int) {
+
+	for i := 0; i < times; i++ {
+		pin.Low()
+		time.Sleep(20 * time.Millisecond)
+		pin.High()
+		time.Sleep(20 * time.Millisecond)
+		pin.Low()
+	}
 }
