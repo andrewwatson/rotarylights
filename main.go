@@ -75,6 +75,7 @@ func main() {
 			fmt.Sprintf("MESSAGE: %s\n", msg)
 		case <- sigChannel:
 			renderLED(0)
+			killChannel <- true
 			os.Exit(0)
 		default:
 		}
