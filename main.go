@@ -2,16 +2,16 @@ package main
 
 import (
 	"fmt"
+	"github.com/gizak/termui"
 	"github.com/stianeikeland/go-rpio"
 	"os"
 	"os/signal"
 	"time"
-	 "github.com/gizak/termui" 
 )
 
 var (
 	led1, led2, led3, led4, led5, led6, led7, led8 rpio.Pin
-	rot_sw, rot_dt, rot_clk                        rpio.Pin
+	rot_c, rot_a, rot_b                        rpio.Pin
 
 	pinSlots []rpio.Pin
 )
@@ -26,9 +26,9 @@ const (
 	PIN_LED_7 = 20
 	PIN_LED_8 = 21
 
-	PIN_ROT_SW  = 4
-	PIN_ROT_DT  = 5
-	PIN_ROT_CLK = 26
+	PIN_ROT_A  = 26
+	PIN_ROT_B  = 5
+	PIN_ROT_C  = 4
 )
 
 func main() {
@@ -39,106 +39,122 @@ func main() {
 	}
 
 	defer rpio.Close()
-
-   err := termui.Init()
-   if err != nil {
-      panic(err)
-   }
-
-   defer termui.Close()
-
 	killChannel := make(chan bool)
 
-	termui.Handle("/sys/kbd/q", func(termui.Event) {
-		termui.StopLoop()
-		renderLED(0)
-		killChannel <- true
-	})
+	sigChannel := make(chan os.Signal, 1)
+	signal.Notify(sigChannel, os.Interrupt)
+
+	/*
+		err := termui.Init()
+		if err != nil {
+			panic(err)
+		}
+
+		defer termui.Close()
+
+
+		termui.Handle("/sys/kbd/q", func(termui.Event) {
+			termui.StopLoop()
+			renderLED(0)
+			killChannel <- true
+		})
+	*/
 
 	setup()
 	renderLED(0)
 
-	renderCUI(0, 0, 0, 0)
+	// renderCUI(0, 0, 0, 0, "")
 
-   go rotary(killChannel)
+	messages := make(chan string)
+	go rotary(killChannel, messages)
 
-	termui.Loop()
+	var msg string
+	for {
+		select {
+		case msg = <-messages:
+			fmt.Sprintf("MESSAGE: %s\n", msg)
+		case <- sigChannel:
+			renderLED(0)
+			os.Exit(0)
+		default:
+		}
+
+	}
+
+	//	termui.Loop()
 
 }
 
-func renderCUI(clk, dt, lastCLK rpio.State, value int) {
+func renderCUI(clk, dt, lastCLK rpio.State, value int, message string) {
 
 	strs := []string{
-		time.Now().Format(time.RFC822),
+		time.Now().Format(time.Stamp),
 		fmt.Sprintf("DT PIN: %d", dt),
 		fmt.Sprintf("CLK PIN: %d", clk),
 		fmt.Sprintf("LAST CLK PIN: %d", lastCLK),
 		fmt.Sprintf("Value: %d", value),
-	}	
+		fmt.Sprintf("Event: %s", message),
+	}
 
 	ls := termui.NewList()
 	ls.Items = strs
 	ls.ItemFgColor = termui.ColorYellow
 	ls.BorderLabel = "Current Values"
-	ls.Height = 10 
-	ls.Width = 50
-	ls.Y = 0
+	ls.Height = 20
+	ls.Width = 150
+	ls.Y = 2
 
 	termui.Render(ls)
 
 }
 
-func rotary(killChannel chan bool) {
+func rotary(killChannel chan bool, messages chan string) {
 
 	encoderVal := 0
 
-	var lastCLK rpio.State
+	var lastA rpio.State
 
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
+	lastA = rot_a.Read()
 
-
-	lastCLK = rpio.High
+	message := ""
 
 	for {
 
+		a := rot_a.Read()
+		b := rot_b.Read()
+
+		if (a != lastA) {
+
+			if (b != a) {
+				encoderVal += 1
+				message = "increment"
+
+			} else {
+				encoderVal -= 1
+				message = "decrement"
+			}
+
+			renderLED(encoderVal)
+			//renderCUI(dt, clk, lastCLK, encoderVal, message)
+
+		}
+
+		if rot_c.Read() == rpio.Low {
+			encoderVal = 0
+			renderLED(encoderVal)
+		}
+
 		select {
-		case <- killChannel:
+		case <-killChannel:
 			fmt.Println("shutdown signal")
 			renderLED(0)
 			return
+		case messages <- message:
 		default:
 		}
 
-		dt := rot_dt.Read()
-		clk := rot_dt.Read()
+		lastA = a
 
-		if dt == rpio.High {
-
-			if lastCLK == rpio.Low && clk == rpio.High {
-				encoderVal += 1
-			}
-
-			if lastCLK == rpio.High && clk == rpio.Low {
-				encoderVal -= 1
-			}
-
-		}
-
-		if lastCLK != clk {
-			lastCLK = clk
-		}
-
-		if rot_sw.Read() == rpio.Low {
-			// switch done been mashed down
-			// fmt.Println("push that button down")
-			encoderVal = 0
-		}
-
-		// blink(led8, 2)
-		// fmt.Printf("Encoder Value: %d\n", encoderVal)
-		renderLED(encoderVal)
-		renderCUI(dt, clk, lastCLK, encoderVal)
 		time.Sleep(5 * time.Millisecond)
 	}
 }
@@ -176,9 +192,9 @@ func setup() {
 
 	pinSlots = []rpio.Pin{led1, led2, led3, led4, led5, led6, led7, led8}
 
-	rot_sw = rpio.Pin(PIN_ROT_SW)
-	rot_dt = rpio.Pin(PIN_ROT_DT)
-	rot_clk = rpio.Pin(PIN_ROT_CLK)
+	rot_a = rpio.Pin(PIN_ROT_A)
+	rot_b = rpio.Pin(PIN_ROT_B)
+	rot_c = rpio.Pin(PIN_ROT_C)
 
 	led1.Output()
 	led2.Output()
@@ -189,12 +205,12 @@ func setup() {
 	led7.Output()
 	led8.Output()
 
-	rot_sw.Output()
-	rot_sw.High()
-	rot_sw.Input()
+	rot_a.Output()
+	rot_a.High()
+	rot_a.Input()
 
-	rot_dt.Input()
-	rot_clk.Input()
+	rot_b.Input()
+	rot_c.Input()
 
 	delay := 50 * time.Millisecond
 
