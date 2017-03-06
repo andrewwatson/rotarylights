@@ -5,13 +5,12 @@ import (
 	"github.com/gizak/termui"
 	"github.com/stianeikeland/go-rpio"
 	"os"
-	"os/signal"
 	"time"
 )
 
 var (
 	led1, led2, led3, led4, led5, led6, led7, led8 rpio.Pin
-	rot_c, rot_a, rot_b                        rpio.Pin
+	rot_c, rot_a, rot_b                            rpio.Pin
 
 	pinSlots []rpio.Pin
 )
@@ -26,9 +25,9 @@ const (
 	PIN_LED_7 = 20
 	PIN_LED_8 = 21
 
-	PIN_ROT_A  = 26
-	PIN_ROT_B  = 5
-	PIN_ROT_C  = 4
+	PIN_ROT_A = 26
+	PIN_ROT_B = 5
+	PIN_ROT_C = 4
 )
 
 func main() {
@@ -41,52 +40,33 @@ func main() {
 	defer rpio.Close()
 	killChannel := make(chan bool)
 
-	sigChannel := make(chan os.Signal, 1)
-	signal.Notify(sigChannel, os.Interrupt)
-
-	/*
-		err := termui.Init()
-		if err != nil {
-			panic(err)
-		}
-
-		defer termui.Close()
-
-
-		termui.Handle("/sys/kbd/q", func(termui.Event) {
-			termui.StopLoop()
-			renderLED(0)
-			killChannel <- true
-		})
-	*/
-
-	setup()
-	renderLED(0)
-
-	// renderCUI(0, 0, 0, 0, "")
-
-	messages := make(chan string)
-	go rotary(killChannel, messages)
-
-	var msg string
-	for {
-		select {
-		case msg = <-messages:
-			fmt.Sprintf("MESSAGE: %s\n", msg)
-		case <- sigChannel:
-			renderLED(0)
-			killChannel <- true
-			os.Exit(0)
-		default:
-		}
-
+	err := termui.Init()
+	if err != nil {
+		panic(err)
 	}
 
-	//	termui.Loop()
+	defer termui.Close()
+
+	termui.Handle("/sys/kbd/q", func(termui.Event) {
+		renderLED(0)
+		killChannel <- true
+		termui.StopLoop()
+	})
+
+	setup()
+	renderCUI(0, 0, 0, 0, "")
+
+	updates := make(chan string)
+	go rotary(killChannel, updates)
+
+	termui.Loop()
 
 }
 
 func renderCUI(clk, dt, lastCLK rpio.State, value int, message string) {
+
+	floatValue := float64(value)
+	percentage := int(100 * floatValue / 8.0)
 
 	strs := []string{
 		time.Now().Format(time.Stamp),
@@ -97,19 +77,37 @@ func renderCUI(clk, dt, lastCLK rpio.State, value int, message string) {
 		fmt.Sprintf("Event: %s", message),
 	}
 
+
 	ls := termui.NewList()
 	ls.Items = strs
 	ls.ItemFgColor = termui.ColorYellow
 	ls.BorderLabel = "Current Values"
-	ls.Height = 20
-	ls.Width = 150
-	ls.Y = 2
+	ls.Height = 9
+	ls.Width = 75 
+	ls.Y = 1
 
-	termui.Render(ls)
+	g4 := termui.NewGauge()
+	g4.Percent =  percentage
+	g4.Width = 75
+	g4.Height = 5
+	g4.Y = 10
+
+	g4.BorderLabel = fmt.Sprintf("LED Status (%d)", percentage)
+	g4.Label = ""
+	g4.PercentColor = termui.ColorYellow
+	g4.BarColor = termui.ColorRed
+	g4.PercentColorHighlighted = termui.ColorBlack
+
+	p := termui.NewPar(":Press Q to Quit")
+	p.Height = 3
+	p.Width = 75	
+	p.Y = 15
+
+	termui.Render(p, ls, g4)
 
 }
 
-func rotary(killChannel chan bool, messages chan string) {
+func rotary(killChannel chan bool, updates chan string) {
 
 	encoderVal := 0
 
@@ -124,9 +122,9 @@ func rotary(killChannel chan bool, messages chan string) {
 		a := rot_a.Read()
 		b := rot_b.Read()
 
-		if (a != lastA) {
+		if a != lastA {
 
-			if (b != a) {
+			if b != a {
 				encoderVal += 1
 				message = "increment"
 
@@ -136,12 +134,14 @@ func rotary(killChannel chan bool, messages chan string) {
 			}
 
 			renderLED(encoderVal)
-			//renderCUI(dt, clk, lastCLK, encoderVal, message)
+			renderCUI(a, b, lastA, encoderVal, message)
 
 		}
 
 		if rot_c.Read() == rpio.Low {
 			encoderVal = 0
+			message = "reset"
+			renderCUI(a, b, lastA, encoderVal, message)
 			renderLED(encoderVal)
 		}
 
@@ -150,8 +150,9 @@ func rotary(killChannel chan bool, messages chan string) {
 			fmt.Println("shutdown signal")
 			renderLED(0)
 			return
-		case messages <- message:
+
 		default:
+
 		}
 
 		lastA = a
@@ -165,8 +166,6 @@ func renderLED(current int) {
 	if current > 8 {
 		current = 8
 	}
-
-	// fmt.Printf("Current Value: %d", current)
 
 	for i := 0; i < 8; i++ {
 
